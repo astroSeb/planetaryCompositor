@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------
 //
-//---- masterDarkCreator.cpp : Outil de cration d'une image master
+//---- masterDarkCreator.cpp : Outil de creation d'une image master
 //                             dark a partir de plusieurs images
 //
 //----------------------------------------------------------------------
