@@ -17,6 +17,7 @@ struct ObjetRoi
     int maxX;
     int minY;
     int maxY;
+    int surface;
 };
 
 
@@ -37,14 +38,16 @@ void dispIm(const cv::Mat & im)
 //----------------------------------------------------------------------
 void floodFill(cv::Mat & imBin, int col0, int lig0, ObjetRoi & obj)
 {
+    //~ std::cout << "DEBUG  : floddFill " << col0 << ", " << lig0 << std::endl;
     //---- Mise a jour de l'objet
     if ( col0 < obj.minX ) { obj.minX = col0; }
     if ( col0 > obj.maxX ) { obj.maxX = col0; }
     if ( lig0 < obj.minY ) { obj.minY = lig0; }
     if ( lig0 > obj.maxY ) { obj.maxY = lig0; }
+    obj.surface += 1;
     
     //---- Mise a jour de l'image
-    imBin.at<uint8_t>(col0, lig0) = 0;
+    imBin.at<uint8_t>(lig0, col0) = 0;
     
     //---- Parcours des voisins
     uint8_t currentVal;
@@ -56,7 +59,7 @@ void floodFill(cv::Mat & imBin, int col0, int lig0, ObjetRoi & obj)
             {
                 if ( (col >= 0) && (col < imBin.cols) )
                 {
-                    currentVal = imBin.at<uint8_t>(col, lig);
+                    currentVal = imBin.at<uint8_t>(lig, col);
                     if ( currentVal == 255 )
                     {
                         floodFill(imBin, col, lig, obj);
@@ -65,8 +68,6 @@ void floodFill(cv::Mat & imBin, int col0, int lig0, ObjetRoi & obj)
             }
         }
     }
-    
-    
     
     
 }
@@ -87,7 +88,7 @@ cv::Rect detectPlanet(cv::Mat & imBin)
     {
         for ( int col = 0; col < imBin.cols; ++col)
         {
-            currentVal = imBin.at<uint8_t>(col, lig);
+            currentVal = imBin.at<uint8_t>(lig, col);
             if ( currentVal == 255 )
             {
                 //~ std::cout << "DEBUG  : obj " << col << ", lig " << lig << std::endl;
@@ -96,6 +97,7 @@ cv::Rect detectPlanet(cv::Mat & imBin)
                 currentObj.maxX = col;
                 currentObj.minY = lig;
                 currentObj.maxY = lig;
+                currentObj.surface = 0;
                 
                 floodFill(imBin, col, lig, currentObj);
                 vecObj.push_back(currentObj);
@@ -106,22 +108,16 @@ cv::Rect detectPlanet(cv::Mat & imBin)
     
     //---- Recherche de l'objet detecte le plus gros
     int surfaceMax = 0;
-    int currentSurface;
     for (std::vector<ObjetRoi>::iterator iObj = vecObj.begin(); iObj != vecObj.end(); ++iObj)
     {
-        //--- Calcul de la surface de l'objet
-        int dx = iObj->maxX - iObj->minX + 1;
-        int dy = iObj->maxY - iObj->minY + 1;
-        currentSurface = (dx) * (dy);
-        std::cout << "DEBUG  : Surface " << currentSurface << std::endl;
-        
-        if ( currentSurface > surfaceMax )
+        //--- Test plus grande surface
+        if ( iObj->surface > surfaceMax )
         {
-            surfaceMax = currentSurface;
+            surfaceMax = iObj->surface;
             maxObjRoi.x = iObj->minX;
-            maxObjRoi.y = iObj->minX;
-            maxObjRoi.width = dx;
-            maxObjRoi.height = dy;
+            maxObjRoi.y = iObj->minY;
+            maxObjRoi.width = iObj->maxX - iObj->minX + 1;
+            maxObjRoi.height = iObj->maxY - iObj->minY + 1;
         }
     }
     
@@ -259,6 +255,11 @@ int main(int argc, char **argv)
     }
     std::cout << "INFO   : Taille image " << firstImage.cols << " * " << firstImage.rows << std::endl;
     std::cout << "INFO   : Type de donnees : " << firstImage.channels() << " cannaux, " << firstImage.elemSize1()*8 << " bit par pixel" << std::endl;
+    dispIm(firstImage);
+    
+    //---- Creation de l'image pour le stacking
+    cv::Mat imStack;
+    firstImage.convertTo(imStack, CV_32FC3);
     
     //---- Recherche de la planete
     //--- Calcul statistiques du fond du ciel
@@ -272,68 +273,81 @@ int main(int argc, char **argv)
     cv::threshold(firstImage, imBin, seuil, 255, cv::THRESH_BINARY);
     cv::cvtColor(imBin, imBin, cv::COLOR_BGR2GRAY);
     std::cout << "INFO   : Type de donnees imBin : " << imBin.channels() << " cannaux, " << imBin.elemSize1()*8 << " bit par pixel" << std::endl;
-    //~ dispIm(imBin);
+    dispIm(imBin);
     
     //--- Detection de l'objet le plus gros
     cv::Rect planetRoi = detectPlanet(imBin);
     std::cout << "DEBUG  : Coord planet " << planetRoi.x << ", " << planetRoi.y << ", " << planetRoi.width << ", " << planetRoi.height << std::endl;
-    //~ cv::rectangle(firstImage, planetRoi, cv::Scalar(255, 0, 0));
-    //~ dispIm(firstImage);
+    cv::rectangle(firstImage, planetRoi, cv::Scalar(255, 0, 0));
+    dispIm(firstImage);
     
-    //~ cv::Mat firstImGray;
-    //~ cv::cvtColor(firstImage, firstImGray, cv::COLOR_BGR2GRAY);
+    cv::Mat planetTemplate = firstImage(planetRoi);
+    dispIm(planetTemplate);
     
-    //~ cv::Ptr<cv::SimpleBlobDetector> detector = cv::SimpleBlobDetector::create();
-    //~ std::vector<cv::KeyPoint> keyPoints;
-    //~ detector->detect(imBin, keyPoints);
-    //~ std::cout << "DEBUG  : nb pt " << keyPoints.size() << std::endl;
-    //~ for (std::vector<cv::KeyPoint>::iterator iPt = keyPoints.begin(); iPt != keyPoints.end(); ++iPt)
-    //~ {
-        //~ std::cout << "DEBUG  : pt " << iPt->pt << std::endl;
+    
+    //---- Parcours des autres images pour recherche de la planete
+    cv::Mat currentImage, currentResult, currentTranslated, currentFloatTrans;
+    float nbIm = 0.0;
+    for (unsigned int indexIm = 1; indexIm < imList.size(); ++indexIm)
+    {
+        //--- Chargement de l'image
+        currentImage = cv::imread(imList[indexIm]);
+        if ( currentImage.empty() )
+        {
+            std::cout << "ERREUR : Echec lors de l'ouverture de l'image " << imList[indexIm] << std::endl;
+            return 1;
+        }
         
-    //~ }
-    
-    //~ cv::Mat im_with_blob;
-    //~ cv::drawKeypoints(firstImGray, keyPoints, im_with_blob, cv::Scalar(0,0,255), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
-    
-    //~ dispIm(im_with_blob);
-    
-    
-    //~ //---- Creation de la cv::Mat pour le stacking
-    //~ cv::Mat finalImFloat;
-    //~ firstImage.convertTo(masterDark, CV_32FC3);
-    
-    //~ //---- Somme des images
-    //~ cv::Mat currentFloatIm;
-    //~ for (unsigned int index = 1; index < imList.size(); ++index)
-    //~ {
-        //~ //--- Chargement image
-        //~ cv::Mat currentImage = cv::imread(imList[index]);
-        //~ currentImage.convertTo(currentFloatIm, CV_32FC3);
+        //--- Recherche de la planete
+        cv::matchTemplate(currentImage, planetTemplate, currentResult, cv::TM_CCORR_NORMED);
+        double minVal, maxVal;
+        cv::Point minLoc, maxLoc;
+        minMaxLoc(currentResult, &minVal, &maxVal, &minLoc, &maxLoc, cv::Mat());
+        //~ std::cout << "DEBUG  : Match " << maxLoc.x << ", " << maxLoc.y << ", score " << maxVal << std::endl;
         
-        //~ //--- Recherche de la planete
+        //--- TODO verifier si la planete n'est pas coupee !!!
         
-        //~ //--- Calcul du decalage
+        //~ cv::Rect test;
+        //~ test.x = maxLoc.x;
+        //~ test.y = maxLoc.y;
+        //~ test.width = 50;
+        //~ test.height = 50;
+        //~ cv::rectangle(currentImage, test, cv::Scalar(255, 0, 0));
+        //~ dispIm(currentImage);
         
-        //~ //--- Stacking
-        //~ cv::add(finalImFloat, currentFloatIm, finalImFloat);
+        //--- Calcul de la translation
+        float dx = -(maxLoc.x - planetRoi.x);
+        float dy = -(maxLoc.y - planetRoi.y);
+        //~ std::cout << "DEBUG  : Trans " << dx << ", " << dy << std::endl;
         
-    //~ }
+        //--- Translation de l'image courante
+        float warpValues[] = { 1.0, 0.0, dx, 0.0, 1.0, dy };
+        cv::Mat translationMat = cv::Mat(2, 3, CV_32F, warpValues);
+        cv::warpAffine(currentImage, currentTranslated, translationMat, currentImage.size());
+        
+        //~ dispIm(currentImage);
+        //~ dispIm(currentTranslated);
+        
+        //--- Somme des stacks
+        currentTranslated.convertTo(currentFloatTrans, CV_32FC3);
+        cv::add(imStack, currentFloatTrans, imStack);
+        nbIm += 1.0;
+    }
     
-    //~ //---- Moyenne des images sommees
-    //~ finalImFloat /= float(imList.size());
+    //---- Moyenne des stacks
+    imStack /= nbIm;
     
-    //~ //---- Conversion en CV_8UC3
-    //~ cv::Mat finalIm;
-    //~ finalImFloat.convertTo(finalIm, CV_8UC3);
+    //---- Conversion du stack en CV_8UC3
+    cv::Mat imStack_8;
+    imStack.convertTo(imStack_8, CV_8UC3);
     
     
-    //~ //---- Export du master DARK
-    //~ if ( ! cv::imwrite(finalImPath, finalIm) )
-    //~ {
-        //~ std::cout << "ERREUR : Echec lors de l'export de l'image resultat " << finalImPath << std::endl;
-        //~ return 1;
-    //~ }
+    //---- Export du master DARK
+    if ( ! cv::imwrite(finalImPath, imStack_8) )
+    {
+        std::cout << "ERREUR : Echec lors de l'export du master DARK " << finalImPath << std::endl;
+        return 1;
+    }
     
     
     return 0;
